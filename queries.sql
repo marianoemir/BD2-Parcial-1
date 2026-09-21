@@ -1,88 +1,85 @@
 -- ============================================================
--- FOOD STORE - queries.sql
--- Historias de usuario resueltas + consultas analíticas
--- Correr DESPUÉS de schema.sql + objects.sql + data.sql
+-- FOOD STORE - queries.sql (Consolidado - Bloque B)
+-- Proyecto Integrador - Base de Datos II (PostgreSQL 16+)
+-- ============================================================
+-- Este script consolida la ejecución de consultas operativas (HUs),
+-- agregaciones, subconsultas avanzadas, funciones de ventana y 
+-- pruebas de equivalencia con EXCEPT.
+-- Correr DESPUÉS de: schema.sql -> objects.sql -> data.sql / carga_masiva.sql
 -- ============================================================
 
+
 -- ============================================================
--- ÉPICA 1 — GESTIÓN DE CATEGORÍAS
+-- SECCIÓN 1: HISTORIAS DE USUARIO (OPERATIVO Y DDL/DML)
+-- ============================================================
+-- NOTA: los IDs usados en esta sección (categoria id=1, usuario id=3/5,
+-- pedido id=6, producto id=1/10) asumen los datos cargados por data.sql
+-- SIN modificaciones previas. Las bajas lógicas (HU-USR-03, HU-PED-03)
+-- no son idempotentes: si esta sección ya se corrió una vez sobre una
+-- base, volver a correrla puede no tener el mismo efecto (los registros
+-- ya estarán con eliminado = TRUE). Para repetir la demo desde cero,
+-- recargar data.sql antes de correr esta sección.
 -- ============================================================
 
--- HU-CAT-01: Listar categorías vigentes
--- Criterio: solo eliminado = FALSE, no debe aparecer "Descontinuados"
+-- ------------------------------------------------------------
+-- 1.1 ÉPICA: GESTIÓN DE CATEGORÍAS
+-- ------------------------------------------------------------
+
+-- HU-CAT-01: Listar categorías vigentes (borrado lógico aplicado)
 SELECT id, nombre, descripcion
 FROM categoria
 WHERE eliminado = FALSE
 ORDER BY id;
 
--- HU-CAT-02: Crear categoría (caso feliz)
+-- HU-CAT-02: Crear categoría (Caso feliz - Evita duplicados en reejecuciones)
 INSERT INTO categoria(nombre, descripcion)
-VALUES ('Vegano', 'Opciones sin productos de origen animal')
-RETURNING id;
-
--- HU-CAT-02 (caso negativo): nombre duplicado -> debe fallar por UNIQUE
--- INSERT INTO categoria(nombre, descripcion) VALUES ('Pizzas', 'duplicado');
--- ERROR esperado: duplicate key value violates unique constraint
+SELECT 'Vegano', 'Opciones sin productos de origen animal'
+WHERE NOT EXISTS (
+    SELECT 1 FROM categoria WHERE nombre = 'Vegano'
+);
 
 -- HU-CAT-03: Editar categoría
 UPDATE categoria
 SET nombre = 'Pizzas Artesanales', descripcion = 'Pizzas a la piedra, catálogo ampliado'
 WHERE id = 1 AND eliminado = FALSE;
 
--- HU-CAT-03 (caso negativo): id inexistente -> 0 filas afectadas
-UPDATE categoria
-SET nombre = 'No existe'
-WHERE id = 9999 AND eliminado = FALSE;
-
--- HU-CAT-04: Eliminar categoría (baja lógica)
--- (usamos la que acabamos de crear para no afectar categorías con productos)
+-- HU-CAT-04: Eliminar categoría (Baja lógica)
 UPDATE categoria
 SET eliminado = TRUE
 WHERE nombre = 'Vegano' AND eliminado = FALSE;
 
--- Verificación: ya no debe aparecer en v_categorias_vigentes
+-- Verificación en vista
 SELECT * FROM v_categorias_vigentes WHERE nombre = 'Vegano';
 
 
--- ============================================================
--- ÉPICA 2 — GESTIÓN DE PRODUCTOS
--- ============================================================
+-- ------------------------------------------------------------
+-- 1.2 ÉPICA: GESTIÓN DE PRODUCTOS
+-- ------------------------------------------------------------
 
--- HU-PROD-01: Listar productos vigentes con su categoría
+-- HU-PROD-01: Listar productos vigentes con su categoría (JOIN explicito)
 SELECT p.id, p.nombre, p.precio, p.stock, c.nombre AS categoria
 FROM producto p
 JOIN categoria c ON c.id = p.categoria_id
 WHERE p.eliminado = FALSE
 ORDER BY p.id;
 
--- HU-PROD-01 (filtro por categoría, ej: solo Pizzas = categoria_id 1)
-SELECT p.id, p.nombre, p.precio, p.stock
-FROM producto p
-WHERE p.eliminado = FALSE AND p.categoria_id = 1
-ORDER BY p.id;
-
--- HU-PROD-02: Crear producto (validando categoría vigente)
+-- HU-PROD-02: Crear producto validando categoría vigente (Evita duplicados)
 INSERT INTO producto(nombre, descripcion, precio, stock, disponible, categoria_id)
 SELECT 'Calzone', 'Pizza cerrada rellena', 4700.00, 8, TRUE, c.id
 FROM categoria c
 WHERE c.id = 1 AND c.eliminado = FALSE
-RETURNING id;
+  AND NOT EXISTS (SELECT 1 FROM producto WHERE nombre = 'Calzone');
 
--- HU-PROD-03: Editar producto (precio y/o stock parcial)
+-- HU-PROD-03: Editar producto (actualización condicional)
 UPDATE producto
 SET precio = COALESCE(3700.00, precio),
-    stock  = COALESCE(NULL, stock)  -- NULL conserva el stock actual
+    stock  = COALESCE(NULL, stock)
 WHERE id = 1 AND eliminado = FALSE;
 
--- HU-PROD-04: Eliminar producto (baja lógica)
-UPDATE producto
-SET eliminado = TRUE
-WHERE nombre = 'Producto temporalmente no disponible' AND eliminado = FALSE;
 
-
--- ============================================================
--- ÉPICA 3 — GESTIÓN DE USUARIOS
--- ============================================================
+-- ------------------------------------------------------------
+-- 1.3 ÉPICA: GESTIÓN DE USUARIOS
+-- ------------------------------------------------------------
 
 -- HU-USR-01: Listar usuarios vigentes
 SELECT id, nombre, apellido, mail, rol
@@ -90,61 +87,36 @@ FROM usuario
 WHERE eliminado = FALSE
 ORDER BY id;
 
--- HU-USR-02: Crear usuario (caso feliz)
+-- HU-USR-02: Crear usuario (Evita duplicados en reejecuciones)
 INSERT INTO usuario(nombre, apellido, mail, celular, contrasena)
-VALUES ('Diego', 'Fernández', 'diego.fernandez@mail.com', '2616666666', 'hash_diego')
-RETURNING id;
+SELECT 'Diego', 'Fernández', 'diego.fernandez@mail.com', '2616666666', 'hash_diego'
+WHERE NOT EXISTS (
+    SELECT 1 FROM usuario WHERE mail = 'diego.fernandez@mail.com'
+);
 
--- HU-USR-02 (caso negativo): mail duplicado -> debe fallar por UNIQUE
--- INSERT INTO usuario(nombre, apellido, mail, contrasena)
--- VALUES ('Otro', 'Usuario', 'ana.garcia@mail.com', 'hash');
--- ERROR esperado: duplicate key value violates unique constraint
-
--- HU-USR-03: Editar usuario
-UPDATE usuario
-SET celular = '2617777777'
-WHERE id = 2 AND eliminado = FALSE;
-
--- HU-USR-04: Eliminar usuario (baja lógica)
+-- HU-USR-03: Baja lógica de usuario
 UPDATE usuario
 SET eliminado = TRUE
 WHERE id = 5 AND eliminado = FALSE;
 
--- Verificación: el historial de pedidos de ese usuario se sigue viendo
-SELECT * FROM v_pedidos_resumen WHERE usuario LIKE 'Sofía%';
 
+-- ------------------------------------------------------------
+-- 1.4 ÉPICA: GESTIÓN DE PEDIDOS Y TRANSACCIONES
+-- ------------------------------------------------------------
 
--- ============================================================
--- ÉPICA 4 — GESTIÓN DE PEDIDOS Y DETALLES
--- ============================================================
-
--- HU-PED-01: Listar pedidos (con filtro opcional por usuario)
+-- HU-PED-01: Consultar resumen de pedidos desde vista
 SELECT id, usuario, fecha, estado, forma_pago, total
 FROM v_pedidos_resumen
 ORDER BY id;
 
-SELECT id, usuario, fecha, estado, forma_pago, total
-FROM v_pedidos_resumen
-WHERE usuario LIKE 'Ana%'
-ORDER BY id;
-
--- HU-PED-02: Crear pedido con detalles (vía procedimiento transaccional)
+-- HU-PED-02: Crear pedido vía Procedimiento Almacenado PL/pgSQL
 CALL sp_crear_pedido(
     3, -- Lucía
     'EFECTIVO',
-    '[{"producto_id":1,"cantidad":1},
-      {"producto_id":10,"cantidad":2}]'::jsonb
+    '[{"producto_id":1,"cantidad":1}, {"producto_id":10,"cantidad":2}]'::jsonb
 );
 
--- Verificación: el total se calculó solo (no quedó en 0)
-SELECT id, total FROM pedido ORDER BY id DESC LIMIT 1;
-
--- HU-PED-03: Actualizar estado / forma de pago
-UPDATE pedido
-SET estado = 'CONFIRMADO', forma_pago = 'TARJETA'
-WHERE id = 3 AND eliminado = FALSE;
-
--- HU-PED-04: Eliminar pedido (baja lógica, en transacción)
+-- HU-PED-03: Transacción manual de baja lógica de un pedido y sus detalles
 BEGIN;
     UPDATE detalle_pedido SET eliminado = TRUE WHERE pedido_id = 6;
     UPDATE pedido SET eliminado = TRUE WHERE id = 6;
@@ -152,10 +124,14 @@ COMMIT;
 
 
 -- ============================================================
--- CONSULTAS ANALÍTICAS
+-- SECCIÓN 2: CONSULTAS ANALÍTICAS AVANZADAS Y OPTIMIZACIÓN
 -- ============================================================
 
--- A) Top 5 productos más vendidos (por cantidad)
+-- ------------------------------------------------------------
+-- 2.1 AGREGACIÓN, GROUP BY Y JOINs (Top Productos y Facturación)
+-- ------------------------------------------------------------
+
+-- Top 5 productos más vendidos por cantidad de unidades
 SELECT pr.id, pr.nombre, SUM(dp.cantidad) AS unidades
 FROM detalle_pedido dp
 JOIN producto pr ON pr.id = dp.producto_id
@@ -164,7 +140,7 @@ GROUP BY pr.id, pr.nombre
 ORDER BY unidades DESC
 LIMIT 5;
 
--- B) Facturación por categoría y por mes
+-- Facturación mensual por categoría
 SELECT c.nombre AS categoria,
        date_trunc('month', ped.fecha) AS mes,
        SUM(dp.subtotal) AS facturado
@@ -176,28 +152,108 @@ WHERE dp.eliminado = FALSE
 GROUP BY c.nombre, date_trunc('month', ped.fecha)
 ORDER BY mes, facturado DESC;
 
--- C) Ranking de usuarios por gasto acumulado (función de ventana)
-SELECT u.id, u.nombre || ' ' || u.apellido AS usuario,
-       SUM(ped.total) AS gasto,
-       RANK() OVER (ORDER BY SUM(ped.total) DESC) AS puesto
-FROM pedido ped
-JOIN usuario u ON u.id = ped.usuario_id
-WHERE ped.eliminado = FALSE
-GROUP BY u.id, u.nombre, u.apellido
-ORDER BY puesto;
-
--- D) Pedidos cuyo total supera el promedio general (subconsulta)
-SELECT id, total
-FROM pedido
-WHERE eliminado = FALSE
-  AND total > (SELECT AVG(total) FROM pedido WHERE eliminado = FALSE)
-ORDER BY total DESC;
-
--- E) Productos sin ventas (LEFT JOIN + IS NULL)
+-- Productos sin ventas (LEFT JOIN + IS NULL)
 SELECT pr.id, pr.nombre
 FROM producto pr
-LEFT JOIN detalle_pedido dp
-       ON dp.producto_id = pr.id AND dp.eliminado = FALSE
-WHERE pr.eliminado = FALSE
-  AND dp.id IS NULL
+LEFT JOIN detalle_pedido dp ON dp.producto_id = pr.id AND dp.eliminado = FALSE
+WHERE pr.eliminado = FALSE AND dp.id IS NULL
 ORDER BY pr.id;
+
+
+-- ------------------------------------------------------------
+-- 2.2 RANKING DE USUARIOS POR GASTO (Funciones de Ventana / CTE / Subqueries)
+-- ------------------------------------------------------------
+
+-- Opción A: JOIN Directo con DENSE_RANK()
+SELECT 
+    u.nombre || ' ' || u.apellido AS nombre_completo,
+    SUM(p.total) AS total_gastado,
+    DENSE_RANK() OVER (ORDER BY SUM(p.total) DESC, u.id ASC) AS puesto
+FROM usuario u
+INNER JOIN pedido p ON p.usuario_id = u.id AND p.eliminado = FALSE
+WHERE u.eliminado = FALSE
+GROUP BY u.id, u.nombre, u.apellido;
+
+-- Opción B: CTE (Common Table Expression) con precalculado
+WITH totales_usuarios AS (
+    SELECT 
+        u.id AS usuario_id,
+        u.nombre || ' ' || u.apellido AS nombre_completo,
+        SUM(p.total) AS total_gastado
+    FROM usuario u
+    INNER JOIN pedido p ON p.usuario_id = u.id AND p.eliminado = FALSE
+    WHERE u.eliminado = FALSE
+    GROUP BY u.id, u.nombre, u.apellido
+)
+SELECT 
+    nombre_completo,
+    total_gastado,
+    DENSE_RANK() OVER (ORDER BY total_gastado DESC, usuario_id ASC) AS puesto
+FROM totales_usuarios;
+
+-- Opción C: Subconsulta en FROM con HAVING
+SELECT 
+    u.nombre || ' ' || u.apellido AS nombre_completo,
+    sub.total_gastado,
+    DENSE_RANK() OVER (ORDER BY sub.total_gastado DESC, u.id ASC) AS puesto
+FROM usuario u
+INNER JOIN (
+    SELECT p.usuario_id, SUM(p.total) AS total_gastado
+    FROM pedido p
+    WHERE p.eliminado = FALSE
+    GROUP BY p.usuario_id
+    HAVING COUNT(p.id) >= 1
+) sub ON sub.usuario_id = u.id
+WHERE u.eliminado = FALSE;
+
+-- Verificación de equivalencia con EXCEPT (Opción A vs Opción B)
+WITH totales_usuarios AS (
+    SELECT u.id AS usuario_id, u.nombre || ' ' || u.apellido AS nombre_completo, SUM(p.total) AS total_gastado
+    FROM usuario u INNER JOIN pedido p ON p.usuario_id = u.id AND p.eliminado = FALSE WHERE u.eliminado = FALSE GROUP BY u.id, u.nombre, u.apellido
+)
+SELECT u.nombre || ' ' || u.apellido AS nombre_completo, SUM(p.total) AS total_gastado, DENSE_RANK() OVER (ORDER BY SUM(p.total) DESC, u.id ASC) AS puesto
+FROM usuario u INNER JOIN pedido p ON p.usuario_id = u.id AND p.eliminado = FALSE WHERE u.eliminado = FALSE GROUP BY u.id, u.nombre, u.apellido
+EXCEPT
+SELECT nombre_completo, total_gastado, DENSE_RANK() OVER (ORDER BY total_gastado DESC, usuario_id ASC) AS puesto FROM totales_usuarios;
+
+
+-- ------------------------------------------------------------
+-- 2.3 PRODUCTOS CON PRECIO MAYOR AL PROMEDIO DE SU CATEGORÍA
+-- ------------------------------------------------------------
+
+-- Opción A: Subconsulta correlacionada en WHERE
+SELECT p.id, p.nombre, p.categoria_id, p.precio
+FROM producto p
+WHERE p.eliminado = FALSE
+AND p.precio > (
+    SELECT AVG(p2.precio)
+    FROM producto p2
+    WHERE p2.categoria_id = p.categoria_id
+    AND p2.eliminado = FALSE
+);
+
+-- Opción B: JOIN con subconsulta agrupada por categoría
+SELECT p.id, p.nombre, p.categoria_id, p.precio
+FROM producto p
+INNER JOIN (
+    SELECT categoria_id, AVG(precio) AS avg_precio
+    FROM producto
+    WHERE eliminado = FALSE
+    GROUP BY categoria_id
+) sub ON sub.categoria_id = p.categoria_id
+WHERE p.eliminado = FALSE
+AND p.precio > sub.avg_precio;
+
+-- Verificación de equivalencia con EXCEPT (Opción A vs Opción B)
+SELECT p.id, p.nombre, p.categoria_id, p.precio
+FROM producto p
+WHERE p.eliminado = FALSE AND p.precio > (
+    SELECT AVG(p2.precio) FROM producto p2 WHERE p2.categoria_id = p.categoria_id AND p2.eliminado = FALSE
+)
+EXCEPT
+SELECT p.id, p.nombre, p.categoria_id, p.precio
+FROM producto p
+INNER JOIN (
+    SELECT categoria_id, AVG(precio) AS avg_precio FROM producto WHERE eliminado = FALSE GROUP BY categoria_id
+) sub ON sub.categoria_id = p.categoria_id
+WHERE p.eliminado = FALSE AND p.precio > sub.avg_precio;
